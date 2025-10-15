@@ -1,39 +1,397 @@
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.tools import tool
+from langgraph.prebuilt import create_react_agent
+from dotenv import load_dotenv
+import requests, json
+
+load_dotenv()
+
+import json
 import requests
 
-url = "https://booking-com15.p.rapidapi.com/api/v1/hotels/searchHotels"
+@tool("search_flights_in_india")
+def search_flights_in_india(params_json: str, min_results: int = 10) -> str:
+    """
+    Searches for flights between two locations in India, returning details with amounts in INR.
+    If not enough results from page 1, continues fetching additional pages until min_results reached or no more pages.
 
-# Use the details returned from get_location_details("Mumbai")
-querystring = {
-    "dest_id": "-2106102",          # from get_location_details
-    "search_type": "city",          # or "CITY" (case-insensitive)
-    "arrival_date": "2025-10-20",   # required
-    "departure_date": "2025-10-25",  # required
-    "adults": "2",                  # number of adults
-    "room_qty": "1",                # number of rooms
-    "units": "metric",
-    "temperature_unit": "c",
-    "languagecode": "en-us",
-    "currency_code": "INR",         # use INR for India
-    "page_number": "1"
-}
+    Args:
+        params_json: JSON string with parameters:
+            - from_id: Origin airport code (e.g., 'BOM.AIRPORT').
+            - to_id: Destination airport code (e.g., 'DEL.AIRPORT').
+            - depart_date: Departure date (YYYY-MM-DD).
+            - return_date: Optional return date.
+            - adults: Optional number of adults.
+            - children: Optional children ages.
+            - cabin_class: Optional cabin class ('ECONOMY', 'BUSINESS', etc.).
+        min_results: Minimum number of results desired (default 10).
 
-headers = {
-    "x-rapidapi-key": "ca1e8d5063msh497378f526e9313p1e7d37jsncd6865999253",
-    "x-rapidapi-host": "booking-com15.p.rapidapi.com"
-}
+    Returns:
+        JSON string of accumulated flight search response items.
+    """
+    params = json.loads(params_json)
+    from_id = params["from_id"]
+    to_id = params["to_id"]
+    depart_date = params["depart_date"]
+    return_date = params.get("return_date", None)
+    adults = int(params.get("adults", 1))
+    children = params.get("children", "0")
+    cabin_class = params.get("cabin_class", "ECONOMY")
 
-response = requests.get(url, headers=headers, params=querystring)
-response.raise_for_status()
+    url = "https://booking-com15.p.rapidapi.com/api/v1/flights/searchFlights"
+    headers = {
+        "x-rapidapi-key": "ca1e8d5063msh497378f526e9313p1e7d37jsncd6865999253",
+        "x-rapidapi-host": "booking-com15.p.rapidapi.com"
+    }
+    
+    all_results = []
+    page_no = 1
+    
+    while True:
+        querystring = {
+            "fromId": from_id,
+            "toId": to_id,
+            "departDate": depart_date,
+            "returnDate": return_date,
+            "stops": "none",
+            "pageNo": str(page_no),
+            "adults": str(adults),
+            "children": children,
+            "sort": "BEST",
+            "cabinClass": cabin_class,
+            "currency_code": "INR"
+        }
+        
+        response = requests.get(url, headers=headers, params=querystring)
+        response.raise_for_status()
+        response = response.json()
 
-data = response.json()
+        # Assuming data contains a key "results" with list of flights
+        flights = response.get("data", {}).get("flightOffers", [])
 
-print("Full API Response:")
-print(data)
+        all_results.extend(flights)
 
-# Extract hotel details from the first few results
-hotels = data.get("data", {}).get("hotels", [])
-for i, hotel in enumerate(hotels[:5], start=1):
-    print(f"\nHotel {i}:")
-    print(f"Name: {hotel.get('property', {}).get('name')}")
-    print(f"Price: {hotel.get('price_breakdown', {}).get('gross_price')}")
-    print(f"Currency: {hotel.get('price_breakdown', {}).get('currency')}")
+
+        # If enough results gathered or no more results, stop
+        if len(all_results) >= min_results or not flights:
+            break
+        
+        page_no += 1
+
+    # Optionally trim to min_results if more than requested
+    #all_results = all_results[:min_results]
+
+    # Return JSON string of accumulated results
+    return json.dumps({"results": all_results})
+
+
+@tool("get_location_details")
+def get_location_details(city: str) -> dict:
+    """
+    Fetches location details (dest_id and search_type) for a given city 
+    using the Booking.com API.
+
+    Args:
+        city (str): Name of the city to search for (e.g., "Paris", "New York").
+
+    Returns:
+        dict: Dictionary containing location details, for example:
+              {
+                 "dest_id": "-1456928",
+                 "dest_type": "city",
+                 "name": "Paris"
+              }
+    """
+
+    url = "https://booking-com15.p.rapidapi.com/api/v1/hotels/searchDestination"
+    querystring = {"query": city}
+    headers = {
+        "x-rapidapi-key": "ca1e8d5063msh497378f526e9313p1e7d37jsncd6865999253",
+        "x-rapidapi-host": "booking-com15.p.rapidapi.com"
+    }
+
+    response = requests.get(url, headers=headers, params=querystring)
+    response.raise_for_status()
+
+    data = response.json()["data"][0]
+    return {
+        "dest_id": data["dest_id"],
+        "dest_type": data["dest_type"],
+        "name": data["name"]
+    }
+
+@tool("search_hotels_in_india")
+def search_hotels_in_india(params_json: str, min_results: int = 10) -> str:
+    """
+    Searches for hotels in a given location in India using the Booking.com API.
+    Continues fetching pages until at least `min_results` are gathered or no more pages exist.
+
+    Args:
+        params_json: JSON string containing parameters:
+            - dest_id
+            - search_type
+            - arrival_date (yyyy-mm-dd)
+            - departure_date (yyyy-mm-dd)
+            - adults (default=1)
+            - room_qty (default=1)
+            - units (default='metric')
+            - temperature_unit (default='c')
+            - languagecode (default='en-us')
+            - currency_code (default='INR')
+        min_results: Minimum number of results desired (default 10).
+
+    Returns:
+        JSON string containing a list of hotel details.
+    """
+    params = json.loads(params_json)
+
+    url = "https://booking-com15.p.rapidapi.com/api/v1/hotels/searchHotels"
+    headers = {
+        "x-rapidapi-key": "ca1e8d5063msh497378f526e9313p1e7d37jsncd6865999253",
+        "x-rapidapi-host": "booking-com15.p.rapidapi.com"
+    }
+
+    query = {
+        "dest_id": params["dest_id"],
+        "search_type": params["search_type"],
+        "arrival_date": params["arrival_date"],
+        "departure_date": params["departure_date"],
+        "adults": int(params.get("adults", 1)),
+        "room_qty": int(params.get("room_qty", 1)),
+        "units": params.get("units", "metric"),
+        "temperature_unit": params.get("temperature_unit", "c"),
+        "languagecode": params.get("languagecode", "en-us"),
+        "currency_code": params.get("currency_code", "INR"),
+        "page_number": 1
+    }
+
+    results = []
+    while len(results) < min_results:
+        response = requests.get(url, headers=headers, params=query)
+        response.raise_for_status()
+        data = response.json()
+
+        hotels = data.get("data", {}).get("hotels", [])
+        if not hotels:
+            break  # no more pages
+        
+        results.extend(hotels)
+        
+
+        query["page_number"] += 1  # go to next page
+
+    return json.dumps({"results": results})
+
+
+@tool("fetch_attraction_location_id")
+def fetch_attraction_location_id(city: str) -> dict:
+    """
+    Fetches search_attraction_location_id (id) for a given city 
+    using the Booking.com API.
+
+    Args:
+        - city (str): Name of the city to search for (e.g., "Paris", "New York").
+
+    Returns:
+        dict: Dictionary containing location details, for example:
+              {
+                "id": "eyJwaW5uZWRQcm9kdWN0IjoiUFJKN2RIa0FlWllaIiwidWZpIjoyMDA4ODMyNX0=",
+              }
+    """
+
+    url = "https://booking-com15.p.rapidapi.com/api/v1/attraction/searchLocation"
+    querystring = {"query": city, "languagecode": "en-us"}
+    headers = {
+        "x-rapidapi-key": "ca1e8d5063msh497378f526e9313p1e7d37jsncd6865999253",
+        "x-rapidapi-host": "booking-com15.p.rapidapi.com"
+    }
+
+    response = requests.get(url, headers=headers, params=querystring)
+    response.raise_for_status()
+
+    data = response.json()["data"]["products"][0]
+    return {
+        "id": data["id"],
+        "name": data["cityName"]
+    }
+
+
+@tool("search_tourist_attractions")
+def search_tourist_attractions(params_json: str, min_results: int = 30) -> str:
+    """
+    Searches for tourist attractions in a given location using the Booking.com API.
+    Continues fetching pages until at least `min_results` are gathered or no more pages exist.
+
+    Args:
+        params_json: JSON string containing parameters:
+            - id : can be retrieved from fetch_attraction_location_id tool
+            - languagecode (default='en-us')
+            - currency_code (default='INR')
+        min_results: Minimum number of results desired (default 30).
+
+    Returns:
+        JSON string containing a list of tourist attraction details.
+    """
+    params = json.loads(params_json)
+
+    url = "https://booking-com15.p.rapidapi.com/api/v1/attraction/searchAttractions"
+    headers = {
+        "x-rapidapi-key": "ca1e8d5063msh497378f526e9313p1e7d37jsncd6865999253",
+        "x-rapidapi-host": "booking-com15.p.rapidapi.com"
+    }
+
+    query = {
+        "id": params["id"],
+        "sortBy": "trending",
+        "languagecode": params.get("languagecode", "en-us"),
+        "currency_code": params.get("currency_code", "INR"),
+        "page_number": 1
+    }
+
+    results = []
+    while len(results) < min_results:
+        response = requests.get(url, headers=headers, params=query)
+        response.raise_for_status()
+        data = response.json()
+
+        tourist_sites = data.get("data", {}).get("products", [])
+        if not tourist_sites:
+            break  # no more pages
+        
+        results.extend(tourist_sites)
+        
+
+        query["page_number"] += 1  # go to next page
+
+    return json.dumps({"results": results})
+
+
+
+model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+
+flight_agent = create_react_agent(
+    model= model,  
+    tools=[search_flights_in_india],  
+    prompt="You are an agent which gives details of 20 flights between source and destination from start date till retrun date.",  
+	name="flight_agent"
+)
+
+hotel_agent = create_react_agent(
+    model= model,  
+    tools=[search_hotels_in_india, get_location_details],  
+    prompt="You are an agent which gives detailed hotel details of 20 hotels in a given location.",
+    name="hotel_agent"
+    
+)
+
+tourist_agent = create_react_agent(
+    model= model,  
+    tools=[search_tourist_attractions, fetch_attraction_location_id],  
+    prompt="You are an agent which gives detailed details of 30 places to visit in a given location.",
+    name="tourist_agent"
+    
+)
+
+
+from langgraph_supervisor import create_supervisor
+
+supervisor = create_supervisor(
+    model=model,
+    agents=[flight_agent, hotel_agent, tourist_agent],
+    output_mode="last_message",
+    prompt="""
+You are a **Trip Planning Supervisor Agent** responsible for creating complete travel itineraries for users.
+
+You will receive the following inputs from the user:
+- Source city/airport  
+- Destination city/airport  
+- Trip start date (departure)  
+- Trip return date (if applicable)
+
+Your job is to use your three sub-agents to design a personalized travel plan:
+
+### 🛫 1. Flight Agent
+- Use this agent first.
+- Fetch details of at least **20 available flights** for the given trip (source → destination → return if applicable).
+
+### 🏨 2. Hotel Agent
+- Use this agent second.
+- Fetch details of at least **20 suitable hotels** in or near the destination.
+
+### 🎡 3. Tourist Agent
+- Use this agent last.
+- Fetch details of at least **30 tourist attractions or activities** in the destination city.
+
+---
+
+### 🎯 Your Objective
+After gathering the results from all agents **(in the above sequence)**, analyze them to produce **two distinct travel packages**:
+
+#### (A) The Most Economical Package
+- Choose the **lowest total cost** combination of flight + hotel.
+- Include 3–5 nearby attractions that are **budget-friendly** or free to visit.
+
+#### (B) The Most Luxurious Package
+- Choose the **most premium experience**, combining:
+  - A business-class or top-rated flight.
+  - A highly rated luxury hotel.
+  - 3–5 exclusive or must-visit attractions.
+
+---
+
+### 🧾 Output Requirements
+Return the final result as a **beautifully formatted travel summary in plain English**, not in JSON.
+
+Structure it as follows:
+
+---
+
+**✈️ Flight Options Summary**
+- Summarize the key flight options found (best economy and luxury).
+- Mention airlines, departure/arrival times, and approximate prices.
+
+**🏨 Hotel Options Summary**
+- Brief overview of hotels found, including average prices and top-rated picks.
+
+---
+
+## 🪙 Most Economical Package
+**Flight:** [airline, flight number, class, price, duration]  
+**Hotel:** [hotel name, rating, price per night, total stay cost]  
+**Attractions:** [list 3–5 names with short descriptions]  
+**💰 Total Estimated Cost:** ₹_____
+
+---
+
+## 💎 Most Luxurious Package
+**Flight:** [airline, flight number, class, price, duration]  
+**Hotel:** [hotel name, rating, amenities, total stay cost]  
+**Attractions:** [list 3–5 exclusive places or experiences]  
+**💵 Total Estimated Cost:** ₹_____
+
+---
+
+### 🗒️ Final Summary
+End with a short, friendly summary comparing both options, e.g.:
+
+> “The Economical package offers excellent value for travelers on a budget, while the Luxurious option ensures a premium experience with top-tier comfort and attractions.”
+
+---
+
+### 🧩 Rules
+1. **Sequential Execution Only:** Call agents in this order → Flight → Hotel → Tourist.  
+2. **One Call per Agent:** Use each only once.  
+3. **No Fabrication:** Use real data returned by agents.  
+4. **Natural Language Output:** Final answer must be clear, well-formatted, and easily readable — **no JSON, no raw data dumps**.
+"""
+).compile()
+
+
+result=supervisor.invoke(
+    {"messages": [{"role": "user", "content": "Source - Delhi, Destination - Goa. Departure - 20 Oct 2025, Arrival - 25 Oct 2025"}]})
+
+import time
+
+for message in result["messages"]:
+	message.pretty_print()
+	time.sleep(5)

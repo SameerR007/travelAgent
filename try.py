@@ -183,6 +183,90 @@ def search_hotels_in_india(params_json: str, min_results: int = 10) -> str:
     return json.dumps({"results": results})
 
 
+@tool("fetch_attraction_location_id")
+def fetch_attraction_location_id(city: str) -> dict:
+    """
+    Fetches search_attraction_location_id (id) for a given city 
+    using the Booking.com API.
+
+    Args:
+        - city (str): Name of the city to search for (e.g., "Paris", "New York").
+
+    Returns:
+        dict: Dictionary containing location details, for example:
+              {
+                "id": "eyJwaW5uZWRQcm9kdWN0IjoiUFJKN2RIa0FlWllaIiwidWZpIjoyMDA4ODMyNX0=",
+              }
+    """
+
+    url = "https://booking-com15.p.rapidapi.com/api/v1/attraction/searchLocation"
+    querystring = {"query": city, "languagecode": "en-us"}
+    headers = {
+        "x-rapidapi-key": "ca1e8d5063msh497378f526e9313p1e7d37jsncd6865999253",
+        "x-rapidapi-host": "booking-com15.p.rapidapi.com"
+    }
+
+    response = requests.get(url, headers=headers, params=querystring)
+    response.raise_for_status()
+
+    data = response.json()["data"]["products"][0]
+    return {
+        "id": data["id"],
+        "name": data["cityName"]
+    }
+
+
+@tool("search_tourist_attractions")
+def search_tourist_attractions(params_json: str, min_results: int = 30) -> str:
+    """
+    Searches for tourist attractions in a given location using the Booking.com API.
+    Continues fetching pages until at least `min_results` are gathered or no more pages exist.
+
+    Args:
+        params_json: JSON string containing parameters:
+            - id : can be retrieved from fetch_attraction_location_id tool
+            - languagecode (default='en-us')
+            - currency_code (default='INR')
+        min_results: Minimum number of results desired (default 10).
+
+    Returns:
+        JSON string containing a list of tourist attraction details.
+    """
+    params = json.loads(params_json)
+
+    url = "https://booking-com15.p.rapidapi.com/api/v1/attraction/searchAttractions"
+    headers = {
+        "x-rapidapi-key": "ca1e8d5063msh497378f526e9313p1e7d37jsncd6865999253",
+        "x-rapidapi-host": "booking-com15.p.rapidapi.com"
+    }
+
+    query = {
+        "id": params["id"],
+        "sortBy": "trending",
+        "languagecode": params.get("languagecode", "en-us"),
+        "currency_code": params.get("currency_code", "INR"),
+        "page_number": 1
+    }
+
+    results = []
+    while len(results) < min_results:
+        response = requests.get(url, headers=headers, params=query)
+        response.raise_for_status()
+        data = response.json()
+
+        hotels = data.get("data", {}).get("hotels", [])
+        if not hotels:
+            break  # no more pages
+        
+        results.extend(hotels)
+        
+
+        query["page_number"] += 1  # go to next page
+
+    return json.dumps({"results": results})
+
+
+
 model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
 
 flight_agent = create_react_agent(
@@ -199,6 +283,15 @@ hotel_agent = create_react_agent(
     name="hotel_agent"
     
 )
+
+tourist_agent = create_react_agent(
+    model= model,  
+    tools=[search_tourist_attractions, fetch_attraction_location_id],  
+    prompt="You are an agent which gives detailed details of 20 places to visit in a given location.",
+    name="tourist_agent"
+    
+)
+
 
 from langgraph_supervisor import create_supervisor
 
