@@ -134,7 +134,7 @@ def search_hotels_in_india(params_json: str, min_results: int = 10) -> str:
             - departure_date (yyyy-mm-dd)
             - adults (default=1)
             - room_qty (default=1)
-            - units (default='metric')
+            - units (default='m')
             - temperature_unit (default='c')
             - languagecode (default='en-us')
             - currency_code (default='INR')
@@ -154,11 +154,11 @@ def search_hotels_in_india(params_json: str, min_results: int = 10) -> str:
     query = {
         "dest_id": params["dest_id"],
         "search_type": params["search_type"],
-        "arrival_date": params["arrival_date"],
-        "departure_date": params["departure_date"],
+        "checkin_date": params["arrival_date"],
+        "checkout_date": params["departure_date"],
         "adults": int(params.get("adults", 1)),
         "room_qty": int(params.get("room_qty", 1)),
-        "units": params.get("units", "metric"),
+        "units": params.get("units", "m"),
         "temperature_unit": params.get("temperature_unit", "c"),
         "languagecode": params.get("languagecode", "en-us"),
         "currency_code": params.get("currency_code", "INR"),
@@ -177,80 +177,24 @@ def search_hotels_in_india(params_json: str, min_results: int = 10) -> str:
         
         results.extend(hotels)
         
+        if not data.get("data", {}).get("pagination", {}).get("next_page"):
+            break  # no next page
 
         query["page_number"] += 1  # go to next page
 
-    return json.dumps({"results": results})
+    return json.dumps({"results": results[:min_results]})
 
 
 model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
 
-flight_agent = create_react_agent(
+agent = create_react_agent(
     model= model,  
     tools=[search_flights_in_india],  
-    prompt="You are an agent which gives details of 10 flights between source and destination from start date till retrun date.",  
-	name="flight_agent"
+    prompt="You are an agent which gives details of 10 flights between source and destination from start date till retrun date."  
 )
 
-hotel_agent = create_react_agent(
-    model= model,  
-    tools=[search_hotels_in_india, get_location_details],  
-    prompt="You are an agent which gives detailed hotel details of 10 hotels in a given location.",
-    name="hotel_agent"
-    
-)
-
-from langgraph_supervisor import create_supervisor
-
-supervisor = create_supervisor(
-    model=model,
-    agents=[flight_agent, hotel_agent],
-	output_mode="last_message",
-    prompt="""
-You are a supervisor agent responsible for planning trips for users. 
-You will receive the following from the user:
-- Source city/airport
-- Destination city/airport
-- Trip start date (departure)
-- Trip return date (if applicable)
-
-Your task is to provide the best combination of flight and hotel bookings for the specified trip. 
-You have access to two sub-agents:
-1. Flight Agent – Fetches details of 10 flights for the given trip.
-2. Hotel Agent – Fetches details of 10 hotels for the given trip.
-
-Instructions:
-
-1. Sequential Execution: Assign work to one agent at a time. Do not call agents in parallel.
-2. Single Call Per Agent: Call each sub-agent only once per user query.
-3. Flight and Hotel Selection: 
-   - Fetch flight options first, then hotel options.
-   - Analyze both results to recommend:
-     a) The most economical package (lowest total cost for flight + hotel).  
-     b) The most luxurious package (highest-rated hotel + premium flight options if available).
-4. Output Requirements: 
-   - Include at least the following for each package:
-     - Flight: airline, flight number, departure time, arrival time, price, and class.
-     - Hotel: name, rating, price per night, amenities, and total cost for the stay.
-     - Total combined cost (flight + hotel)
-   - Clearly label the two packages as “Most Economical” and “Most Luxurious.”
-5. Formatting: Return results in a structured JSON format with two top-level keys: economical_package and luxurious_package.
-6. User-Friendly: Provide brief readable summaries alongside the structured data.
-
-Remember:
-- Only call each agent once.
-- Respect sequential execution.
-- Use the data returned by sub-agents; do not fabricate details.
-"""
-).compile()
-
-
-
-result=supervisor.invoke(
-    {"messages": [{"role": "user", "content": "Source-Delhi, Destination - Dehradun. Arrival - 20 Oct 2025, Departure - 25 Oct 2025"}]})
-
-import time
+result=agent.invoke(
+    {"messages": [{"role": "user", "content": "Source delhi, destibation bombay. Start date 25th Oct 2025, return date 30th October 2025"}]})
 
 for message in result["messages"]:
-	message.pretty_print()
-	time.sleep(15)
+    message.pretty_print()
