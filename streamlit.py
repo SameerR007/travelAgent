@@ -9,10 +9,17 @@ load_dotenv()
 import json
 import requests
 
-@tool("search_flights_in_india")
-def search_flights_in_india(params_json: str, min_results: int = 10) -> str:
+from langsmith import Client
+from langsmith.run_helpers import traceable
+
+
+client = Client()
+
+
+@tool("search_flights")
+def search_flights(params_json: str, min_results: int = 10) -> str:
     """
-    Searches for flights between two locations in India, returning details with amounts in INR.
+    Searches for flights between two locations, returning details with amounts in currency user has specified.
     If not enough results from page 1, continues fetching additional pages until min_results reached or no more pages.
 
     Args:
@@ -24,6 +31,7 @@ def search_flights_in_india(params_json: str, min_results: int = 10) -> str:
             - adults: Optional number of adults.
             - children: Optional children ages.
             - cabin_class: Optional cabin class ('ECONOMY', 'BUSINESS', etc.).
+            - currency_code: 'INR', 'EUR', 'USD'. Default='INR'
         min_results: Minimum number of results desired (default 10).
 
     Returns:
@@ -37,6 +45,7 @@ def search_flights_in_india(params_json: str, min_results: int = 10) -> str:
     adults = int(params.get("adults", 1))
     children = params.get("children", "0")
     cabin_class = params.get("cabin_class", "ECONOMY")
+    currency_code = params.get("currency_code", "INR")
 
     url = "https://booking-com15.p.rapidapi.com/api/v1/flights/searchFlights"
     headers = {
@@ -59,7 +68,7 @@ def search_flights_in_india(params_json: str, min_results: int = 10) -> str:
             "children": children,
             "sort": "BEST",
             "cabinClass": cabin_class,
-            "currency_code": "INR"
+            "currency_code": currency_code
         }
         
         response = requests.get(url, headers=headers, params=querystring)
@@ -120,10 +129,10 @@ def get_location_details(city: str) -> dict:
         "name": data["name"]
     }
 
-@tool("search_hotels_in_india")
-def search_hotels_in_india(params_json: str, min_results: int = 10) -> str:
+@tool("search_hotels")
+def search_hotels(params_json: str, min_results: int = 10) -> str:
     """
-    Searches for hotels in a given location in India using the Booking.com API.
+    Searches for hotels in a given location using the Booking.com API.
     Continues fetching pages until at least `min_results` are gathered or no more pages exist.
 
     Args:
@@ -136,8 +145,8 @@ def search_hotels_in_india(params_json: str, min_results: int = 10) -> str:
             - room_qty (default=1)
             - units (default='metric')
             - temperature_unit (default='c')
-            - languagecode (default='en-us')
-            - currency_code (default='INR')
+            - languagecode: 'en-us', 'de', 'hi'. Default='en-us'
+            - currency_code: 'INR', 'EUR', 'USD'. Default='INR'
         min_results: Minimum number of results desired (default 10).
 
     Returns:
@@ -184,14 +193,15 @@ def search_hotels_in_india(params_json: str, min_results: int = 10) -> str:
 
 
 @tool("fetch_attraction_location_id")
-def fetch_attraction_location_id(city: str) -> dict:
+def fetch_attraction_location_id(params_json: str) -> dict:
     """
     Fetches search_attraction_location_id (id) for a given city 
     using the Booking.com API.
 
     Args:
-        - city (str): Name of the city to search for (e.g., "Paris", "New York").
-
+        params_json: JSON string containing parameters:
+            - city (str): Name of the city to search for (e.g., "Paris", "New York").
+            - languagecode: 'en-us', 'de', 'hi'. Default='en-us'
     Returns:
         dict: Dictionary containing location details, for example:
               {
@@ -199,8 +209,11 @@ def fetch_attraction_location_id(city: str) -> dict:
               }
     """
 
+    params = json.loads(params_json)
+
+
     url = "https://booking-com15.p.rapidapi.com/api/v1/attraction/searchLocation"
-    querystring = {"query": city, "languagecode": "en-us"}
+    querystring = {"query": params["city"], "languagecode": params.get("languagecode", "en-us")}
     headers = {
         "x-rapidapi-key": "ca1e8d5063msh497378f526e9313p1e7d37jsncd6865999253",
         "x-rapidapi-host": "booking-com15.p.rapidapi.com"
@@ -225,8 +238,8 @@ def search_tourist_attractions(params_json: str, min_results: int = 30) -> str:
     Args:
         params_json: JSON string containing parameters:
             - id : can be retrieved from fetch_attraction_location_id tool
-            - languagecode (default='en-us')
-            - currency_code (default='INR')
+            - languagecode: 'en-us', 'de', 'hi'. Default='en-us'
+            - currency_code: 'INR', 'EUR', 'USD'. Default='INR'
         min_results: Minimum number of results desired (default 30).
 
     Returns:
@@ -271,14 +284,14 @@ model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
 
 flight_agent = create_react_agent(
     model= model,  
-    tools=[search_flights_in_india],  
-    prompt="You are an agent which gives details of 20 flights between source and destination from start date till retrun date.",  
+    tools=[search_flights],  
+    prompt="You are an agent which gives details of 20 flights between source and destination from start date till return date.",  
 	name="flight_agent"
 )
 
 hotel_agent = create_react_agent(
     model= model,  
-    tools=[search_hotels_in_india, get_location_details],  
+    tools=[search_hotels, get_location_details],  
     prompt="You are an agent which gives detailed hotel details of 20 hotels in a given location.",
     name="hotel_agent"
     
@@ -289,7 +302,6 @@ tourist_agent = create_react_agent(
     tools=[search_tourist_attractions, fetch_attraction_location_id],  
     prompt="You are an agent which gives detailed details of 30 places to visit in a given location.",
     name="tourist_agent"
-    
 )
 
 
@@ -329,13 +341,13 @@ After gathering the results from all agents **(in the above sequence)**, analyze
 
 #### (A) The Most Economical Package
 - Choose the **lowest total cost** combination of flight + hotel.
-- Include 3–5 nearby attractions that are **budget-friendly** or free to visit.
+- Include some (depending on the number of vacation days) of nearby attractions that are **budget-friendly** or free to visit.
 
 #### (B) The Most Luxurious Package
 - Choose the **most premium experience**, combining:
   - A business-class or top-rated flight.
   - A highly rated luxury hotel.
-  - 3–5 exclusive or must-visit attractions.
+  - Include some (depending on the number of vacation days) exclusive or must-visit attractions.
 
 ---
 
@@ -356,18 +368,18 @@ Structure it as follows:
 ---
 
 ## 🪙 Most Economical Package
-**Flight:** [airline, flight number, class, price, duration]  
-**Hotel:** [hotel name, rating, price per night, total stay cost]  
-**Attractions:** [list 3–5 names with short descriptions]  
-**💰 Total Estimated Cost:** ₹_____
+1. **Flight:** [airline, flight number, class, price, duration] \n
+2. **Hotel:** [hotel name, rating, price per night, total stay cost] \n  
+3. **Attractions:** [list names with short descriptions]  \n
+4. **💰 Total Estimated Cost:** ₹_____ \n
 
 ---
 
 ## 💎 Most Luxurious Package
-**Flight:** [airline, flight number, class, price, duration]  
-**Hotel:** [hotel name, rating, amenities, total stay cost]  
-**Attractions:** [list 3–5 exclusive places or experiences]  
-**💵 Total Estimated Cost:** ₹_____
+1. **Flight:** [airline, flight number, class, price, duration] \n  
+2. **Hotel:** [hotel name, rating, amenities, total stay cost]  \n
+3. **Attractions:** [list exclusive places or experiences]  \n
+4. **💵 Total Estimated Cost:** ₹_____ \n
 
 ---
 
@@ -380,18 +392,50 @@ End with a short, friendly summary comparing both options, e.g.:
 
 ### 🧩 Rules
 1. **Sequential Execution Only:** Call agents in this order → Flight → Hotel → Tourist.  
-2. **One Call per Agent:** Use each only once.  
+2. **One Call per Agent:** Use each only once unless the previous execution of agent did not yield desired result and hence needed a retry.  
 3. **No Fabrication:** Use real data returned by agents.  
 4. **Natural Language Output:** Final answer must be clear, well-formatted, and easily readable — **no JSON, no raw data dumps**.
 """
 ).compile()
 
 
-result=supervisor.invoke(
-    {"messages": [{"role": "user", "content": "Source - Delhi, Destination - Goa. Departure - 20 Oct 2025, Arrival - 25 Oct 2025"}]})
 
-import time
+# ------------------------------------------------
+# Streamlit UI
+# ------------------------------------------------
 
-for message in result["messages"]:
-	message.pretty_print()
-	time.sleep(5)
+import streamlit as st
+
+st.set_page_config(page_title="AI Travel Planner", page_icon="✈️", layout="centered")
+st.title("🌍 AI Travel Planner")
+st.write("Plan your trip with real data from Booking.com APIs — flights, hotels, and attractions!")
+
+st.sidebar.header("🧳 Trip Details")
+source = st.sidebar.text_input("Source City / Airport", "Delhi")
+destination = st.sidebar.text_input("Destination City / Airport", "Munich")
+depart_date = st.sidebar.date_input("Departure Date")
+return_date = st.sidebar.date_input("Return Date")
+
+currency = st.sidebar.selectbox("Currency", ["INR", "EUR", "USD"])
+
+if st.sidebar.button("Plan My Trip 🚀"):
+    with st.spinner("Planning your itinerary... This may take a minute ⏳"):
+
+        user_query = (
+            f"Source - {source}, Destination - {destination}. "
+            f"Departure - {depart_date}, Arrival - {return_date}."
+            f"Use currency: {currency} for api parameters."
+        )
+
+        @traceable(name="travelAgent_Supervisor_Run")
+        def run_query():
+            result = supervisor.invoke({"messages": [{"role": "user", "content": user_query}]})
+            return result
+
+        try:
+            result = run_query()
+            st.success("✅ Trip plan generated successfully!")
+            print(result["messages"][-1].content)
+            st.markdown(result["messages"][-1].content)
+        except Exception as e:
+            st.error(f"❌ Error: {e}")
