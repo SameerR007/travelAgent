@@ -5,7 +5,7 @@ The **AI Travel Planner** is a multi-agent application that automatically plans 
 ## Demo
 
 You can try a live demo of the project here:  
-**[Demo Link](https://huggingface.co/spaces/sameerrawat07/travelAgent)**
+**[Demo Link](https://huggingface.co/spaces/sameerrawat07/travelAgent)** (down since api limit reached)
 
 ---
 
